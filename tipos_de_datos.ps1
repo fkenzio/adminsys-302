@@ -1,2 +1,3 @@
-$variable = "como estas!?"
-$var2 = "reprobados.com"
+[int]$variable1=100
+$variable1.GetType()
+[int]$variable2="hola"

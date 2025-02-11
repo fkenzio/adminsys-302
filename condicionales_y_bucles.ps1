@@ -90,3 +90,93 @@ switch -Regex ($url, $email, $email2)
 
 1 -eq "1.0"
 "1.0" -eq 1
+
+for (($i = 0), ($j = 0); $i -lt 5; $i++)
+{
+    "`$i:$i"
+    "`$j:$j"
+}
+
+for ($($i = 0), ($j = 0); $i -lt 5; $($i++;$j++))
+{
+    "`$i:$i"
+    "`$j:$j"
+}
+
+$ssoo = "freebsd", "openbsd", "solaris", "fedora", "ubuntu", "netbsd"
+foreach ($so in $ssoo)
+{
+    Write-Host $so
+}
+
+foreach ($archivo in Get-ChildItem)
+{
+    if ($archivo.length -ge 10KB)
+    {
+        Write-Host $archivo -> [($archivo.length)]
+    }
+}
+
+$num = 0 
+
+while ($num -ne 5)
+{
+    if ($num -eq 1) {$num = $num + 3 ; Continue }
+    $num++
+    Write-Host $num 
+}
+
+$valor = 5 
+$multiplicacion = 1
+do
+{
+    $multiplicacion = $multiplicacion * $valor
+    $valor-- 
+}
+until ($valor -eq 0)
+
+Write-Host $multiplicacion
+
+$num = 10 
+
+for($i = 2;  $i -lt 10; $i++)
+{
+    $num = $num+$i
+    if ($i -eq 5) {Break }
+}
+
+Write-Host $num
+Write-Host $i
+
+$cadena = "Hola, buenas tardes"
+$cadena2 = "Hola, buenas noches"
+
+switch -Wildcard ($cadena, $cadena2)
+{
+    "Hola, buenas*" {"[$_] coincide con [Hola, buenas*]"}
+    "Hola, bue*" {"[$_] coincide con [Hola, bue*]"}
+    "Hola,*" {"[$_] coincide con [Hola,*]"; Break}
+    "Hola, buena tardes" {"[$_] coincide con [Hola, buenas tardes]"}
+}
+
+$num = 10 
+
+for($i = 2; $i -lt 10; $i++)
+{
+    if($i -eq 5) { Continue}
+    $num = $num+$i
+}
+
+Write-Host $num
+Write-Host $i
+
+$cadena = "Hola, buenas tardes"
+$cadena2 = "Hola, buenas noches"
+
+switch -Wildcard ($cadena, $cadena2)
+{
+    "Hola, buenas*" {"[$_] coincide con [Hola, buenas*]"}
+    "Hola, bue*" {"[$_] coincide con [Hola, bue*]"; Continue} 
+    "Hola,*" {"[$_] coincide con [Hola,*]"}
+    "Hola, buenas tardes" {"[$_] coincide con [Hola, buenas tardes]"}
+}
