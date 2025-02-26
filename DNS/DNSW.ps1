@@ -1,7 +1,10 @@
+Import-Module "C:\Users\Victor Ruiz\OneDrive\Documentos\GitHub\adminsys-302\FUNCIONES.ps1"
+
 Install-WindowsFeature -Name DNS -IncludeManegementTools
 
-$Dominio = "reprobados.com"
-$IP = "192.168.0.154"
+$DATOS = Solicitar-Datos
+$Dominio = $DATOS.Dominio
+$IP = $DATOS.IP
 
 if (-not (Get-DnsServerZone -Name $Dominio -ErrorAction SilentlyContinue))
 {
@@ -18,7 +21,7 @@ Write-Host "Registro A para '$Dominio' agregada correctamente"
 DnsServerResourceRecordA -ZoneName $Dominio -Name "www" -IPv4Address $IP
 Write-Host "Registro A para 'www.$Dominio' agregado correctamente"
 
-Set-DnsClientServerAddress -InterfaceIndex 5 -ServerAddresses 192.168.0.154
+Set-DnsClientServerAddress -InterfaceIndex 5 -ServerAddresses $IP
 
 Restart-Service DNS
 Write-Host "Configuracion DNS completada con exito"

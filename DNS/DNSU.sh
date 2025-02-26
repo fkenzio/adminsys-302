@@ -1,9 +1,11 @@
 #!/bin/bash
 
-DOMINIO="reprobados.com"
-IP_SERVIDOR="192.168.0.155"
+source C:\Users\Victor Ruiz\OneDrive\Documentos\GitHub\adminsys-302\FUNCIONES.sh
+
+solicitar_datos
+
 NAMED_CONF="/etc/bind/named.conf.local"
-ZONE_FILE="/etc/bind/db.reprobados"
+ZONE_FILE="/etc/bind/db.$DOMINIO"
 
 echo "Instalando bind9..."
 sudo apt update && sudo apt install -y bind9 bind9-utils bind9-dnsutils

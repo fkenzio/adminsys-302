@@ -1,56 +1,33 @@
-Get-Verb
-
-function Get-Fecha
-{
-Get-Date
-}
-Get-Fecha
-
-Get-ChildItem -Path Function:\Get-*
-
-Get-ChildItem -Path Function:\Get-Fecha | Remove-Item
-Get-ChildItem -Path Function:\Get-*
-
-function Get-Resta {
-Param ([int]$num1, [int]$num2)
-$resta=$num-$num2
-Write-Host "La resta de los parametros es $resta"
+# Función que valida si una cadena es una dirección IP válida
+function Validar-IP {
+    param(
+        [string]$ip
+    )
+    # Expresión regular para validar una dirección IPv4
+    if ($ip -match '^((25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(25[0-5]|2[0-4]\d|[01]?\d\d?)$') {
+        return $true
+    }
+    else {
+        return $false
+    }
 }
 
-Get-resta 10 5
+# Función que solicita al usuario ingresar un dominio e IP, y valida la IP
+function Solicitar-Datos {
+    # Solicitar el dominio
+    $DOMINIO = Read-Host "Por favor, ingresa el dominio"
 
-Get-resta -num2 10 -num1 5
+    # Bucle para asegurarse de que la IP ingresada es válida
+    do {
+        $IP = Read-Host "ingresa la dirección IP: "
+        if (-not (Validar-IP -ip $IP)) {
+            Write-Host "la dirección IP ingresada no es válida. Intenta nuevamente"
+        }
+    } while (-not (Validar-IP -ip $IP))  # Se repite hasta que la IP sea válida
 
-Get-resta -num2 10
-
-function Get-Resta {
-Param ([Parameter(Mandatory)][int]$num1, [int]$num2)
-$resta=$num1-$num2
-Write-Host "La resta de los parametros es $resta"
-}
-Get-Resta -num2 10
-
-function Get-Resta {
-[CmdletBinding()]
-Param ([int]$num1, [int]$num2)
-$resta=$num1-$num2
-Write-Host "La resta de los parametros es $resta"
+    # Retornar los valores en un objeto
+    return @{ Dominio = $DOMINIO; IP = $IP }
 }
 
-(Get-Command -Name Get-Resta).Parameters.Keys
 
-function Get-Resta {
-[CmdletBinding()]
-Param ([int]$num1, [int]$num2)
-$resta=$num1-$num2 #Operacion que realiza la resta
-Write-Host"La resta de los parametros es $resta"
-}
-
-function Get-Resta {
-[CmdletBinding()]
-Param ([int]$num1, [int]$num2)
-$resta=num1-$num2
-Write-Verbose -Message "Operacion que va a realizar una resta de $num1 y $num2"
-Write-Host "La resta de los parametros es $resta"
-}
-Get-Resta 10 5 -Verbose
+Export-ModuleMember -Function Validar-IP, Solicitar-Datos
