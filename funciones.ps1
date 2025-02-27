@@ -29,5 +29,10 @@ function Solicitar-Datos {
     return @{ Dominio = $DOMINIO; IP = $IP }
 }
 
+function Configurar_DHCP {
+    Add-DHCPServerV4Scope
+    Set-DHCPServerV4OptionValue -ScopeId 192.168.0.0 -DnsServer 8.8.8.8 -Router 192.168.0.1
+    Restart-Service dhcpserver
+}
 
-Export-ModuleMember -Function Validar-IP, Solicitar-Datos
+Export-ModuleMember -Function Validar-IP, Solicitar-Datos, Configurar_DHCP
