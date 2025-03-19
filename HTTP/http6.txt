@@ -1,0 +1,497 @@
+###############################################################################
+# Función para validar que el puerto es un entero válido, no está en uso,
+# y no pertenece a puertos reservados para protocolos conocidos
+###############################################################################
+function Validar-Puerto {
+    param (
+        [string]$mensaje = "Ingrese un puerto (1-65500):"
+    )
+
+    # Lista de puertos que se consideran reservados (puedes modificarla a tu gusto)
+    $excludedPorts = @(21,22,23,25,53,80,110,135,139,443,445,3306,1433,5432,8080)
+
+    do {
+        $puertoInput = Read-Host $mensaje
+
+        # Verificar que se haya ingresado un valor numérico
+        if (-not ($puertoInput -match '^\d{1,5}$')) {
+            Write-Output "Error: Debe ingresar un número entero válido."
+            continue
+        }
+
+        $puerto = [int]$puertoInput
+
+        # Verificar que el número esté dentro del rango permitido
+        if ($puerto -lt 1 -or $puerto -gt 65500) {
+            Write-Output "Error: El puerto debe estar entre 1 y 65500."
+            continue
+        }
+
+        # Verificar si está en la lista de puertos excluidos
+        if ($excludedPorts -contains $puerto) {
+            Write-Output "Error: El puerto $puerto está reservado para un protocolo. Elija otro."
+            continue
+        }
+
+        # Obtener los puertos TCP activos usando .NET
+        $activePorts = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() | ForEach-Object { $_.Port }
+
+        # Validar si el puerto está en uso
+        if ($activePorts -contains $puerto) {
+            Write-Output "El puerto $puerto ya está en uso. Por favor, elija otro puerto."
+            continue
+        }
+
+        # Si pasa todas las validaciones, se retorna el puerto
+        return $puerto
+    } while ($true)
+}
+
+###############################################################################
+# Función para instalar IIS
+###############################################################################
+function Instalar-IIS {
+    Write-Output "Instalando IIS..."
+    Install-WindowsFeature Web-Server -IncludeAllSubFeature
+    Set-Service -Name W3SVC -StartupType Automatic
+    Start-Service W3SVC
+    Write-Output "IIS instalado y configurado."
+}
+
+###############################################################################
+# Función para configurar IIS con el puerto ingresado y mostrar contenido
+###############################################################################
+function Configurar-IIS {
+    $puerto = Validar-Puerto -mensaje "Ingrese el puerto en el que desea configurar IIS:"
+    
+    # Verificar si la configuración de binding ya existe antes de eliminarla
+    $existingBinding = Get-WebBinding -Name "Default Web Site" -ErrorAction SilentlyContinue
+    if ($existingBinding) {
+        Remove-WebBinding -Name "Default Web Site" -BindingInformation "*:80:" -ErrorAction SilentlyContinue
+    }
+
+    # Configurar IIS en el puerto seleccionado
+    Set-ItemProperty "IIS:\Sites\Default Web Site" -Name Bindings -Value @{Protocol="http"; bindingInformation="*:${puerto}:"}
+    Restart-Service W3SVC
+
+    Write-Output "IIS configurado en el puerto $puerto."
+    iisreset
+
+    # Obtener y mostrar el contenido de la página en texto plano
+    Write-Output "Obteniendo el contenido de la página en http://localhost:$puerto ..."
+    try {
+        $response = Invoke-WebRequest -Uri "http://localhost:$puerto" -UseBasicParsing
+        Write-Output "Contenido de la página:"
+        Write-Output $response.Content
+    } catch {
+        Write-Output "No se pudo obtener el contenido de la página: $_"
+    }
+}
+
+###############################################################################
+# Funciones para obtener versiones disponibles de Nginx y Apache
+###############################################################################
+function Obtener-Versiones-Nginx {
+    return @("nginx-1.24.0.zip", "nginx-1.23.3.zip", "nginx-1.22.1.zip")
+}
+
+function Obtener-Versiones-Apache {
+    return @(
+        "httpd-2.4.63-250207-win64-VS17.zip",
+        "httpd-2.4.62-240101-win64-VS17.zip",
+        "httpd-2.4.61-231205-win64-VS17.zip"
+    )
+}
+
+###############################################################################
+# Función para descargar archivos (curl.exe o Invoke-WebRequest)
+###############################################################################
+function Descargar-Archivo {
+    param (
+        [string]$url,
+        [string]$outputPath
+    )
+    
+    Write-Output "Descargando archivo desde: $url ..."
+    
+    # Intentar con curl.exe si está disponible
+    if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+        try {
+            Start-Process -FilePath "curl.exe" -ArgumentList "-L", "$url", "-o", "$outputPath" -NoNewWindow -Wait
+            Write-Output "Descarga completada: $outputPath"
+        } catch {
+            Write-Output "Error al descargar con curl.exe: $_"
+            return $false
+        }
+    } else {
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $outputPath -ErrorAction Stop
+            Write-Output "Descarga completada con Invoke-WebRequest: $outputPath"
+        } catch {
+            Write-Output "Error al descargar el archivo: $_"
+            return $false
+        }
+    }
+    
+    # Verificar tamaño mínimo del archivo (1MB) para evitar descargas incompletas
+    if (!(Test-Path $outputPath) -or (Get-Item $outputPath).length -lt 1000000) {
+        Write-Output "Error: El archivo descargado es demasiado pequeño o está corrupto."
+        return $false
+    }
+    return $true
+}
+
+###############################################################################
+# Función para instalar VC++ Redistributable si falta VCRUNTIME140.dll
+###############################################################################
+function Instalar-VC_Redist {
+    # Comprobar si la DLL existe en System32 o SysWOW64
+    if ((Test-Path "C:\Windows\System32\VCRUNTIME140.dll") -or (Test-Path "C:\Windows\SysWOW64\VCRUNTIME140.dll")) {
+        Write-Output "VC++ Redistributable ya instalado."
+        return $true
+    } else {
+        Write-Output "VCRUNTIME140.dll no se encontró. Descargando e instalando VC++ Redistributable..."
+        $vcUrl = "https://aka.ms/vs/16/release/vc_redist.x64.exe"
+        $tempDir = "C:\temp"
+        if (!(Test-Path $tempDir)) {
+            New-Item -Path $tempDir -ItemType Directory | Out-Null
+        }
+        $vcInstaller = "$tempDir\vc_redist.x64.exe"
+        try {
+            Invoke-WebRequest -Uri $vcUrl -OutFile $vcInstaller -UseBasicParsing
+            Write-Output "Instalando VC++ Redistributable..."
+            Start-Process -FilePath $vcInstaller -ArgumentList "/install", "/quiet", "/norestart" -NoNewWindow -Wait
+            Start-Sleep -Seconds 10
+            Remove-Item $vcInstaller -Force
+            if ((Test-Path "C:\Windows\System32\VCRUNTIME140.dll") -or (Test-Path "C:\Windows\SysWOW64\VCRUNTIME140.dll")) {
+                Write-Output "VC++ Redistributable instalado correctamente."
+                return $true
+            } else {
+                Write-Output "Error: La instalación de VC++ Redistributable falló."
+                return $false
+            }
+        } catch {
+            Write-Output "Error al descargar o instalar VC++ Redistributable: $_"
+            return $false
+        }
+    }
+}
+
+###############################################################################
+# Función para instalar Nginx y mostrar el contenido en consola
+###############################################################################
+function Instalar-Nginx {
+    $versiones = Obtener-Versiones-Nginx
+    $installBasePath = "C:\Nginx"
+    
+    # Verificar si ya existe una instalación previa de Nginx
+    if (Test-Path $installBasePath) {
+        $resp = Read-Host "Ya existe una instalación de Nginx en $installBasePath. ¿Desea eliminarla para instalar otra versión? (S/N)"
+        if ($resp -match '^[sS]') {
+            try {
+                # Detener cualquier proceso nginx.exe que pudiera seguir corriendo
+                $nginxProcesses = Get-Process nginx -ErrorAction SilentlyContinue
+                if ($nginxProcesses) {
+                    Write-Output "Deteniendo procesos de Nginx..."
+                    $nginxProcesses | Stop-Process -Force
+                }
+
+                # Eliminar carpeta Nginx
+                Remove-Item -Path $installBasePath -Recurse -Force
+                Write-Output "Instalación anterior de Nginx eliminada."
+            } catch {
+                Write-Output "No se pudo eliminar la instalación previa: $_"
+                return
+            }
+        } else {
+            Write-Output "Cancelando instalación de Nginx."
+            return
+        }
+    }
+    
+    Write-Output "Seleccione la versión de Nginx a instalar:"
+    for ($i = 0; $i -lt $versiones.Length; $i++) {
+        Write-Output "$($i+1). $($versiones[$i])"
+    }
+    $seleccion = Read-Host "Ingrese el número de la versión"
+    if ($seleccion -lt 1 -or $seleccion -gt $versiones.Length) {
+        Write-Output "Opción inválida. Cancelando instalación."
+        return
+    }
+
+    $nginxVersion = $versiones[$seleccion - 1]
+    $urlNginx = "https://nginx.org/download/$nginxVersion"
+    $zipPath = "C:\temp_download.zip"
+
+    # Descargar Nginx
+    if (-not (Descargar-Archivo -url $urlNginx -outputPath $zipPath)) {
+        Write-Output "Falló la descarga. Cancelando instalación."
+        return
+    }
+    
+    # Extraer y mover archivos
+    Write-Output "Extrayendo archivos a $installBasePath ..."
+    Expand-Archive -Path $zipPath -DestinationPath "C:\temp_nginx" -Force
+    Write-Output "Extracción completada."
+
+    # Determinar carpeta extraída correctamente
+    $nginxExtractedFolder = Get-ChildItem -Path "C:\temp_nginx" -Directory | Select-Object -First 1
+    if ($null -eq $nginxExtractedFolder) {
+        Write-Output "Error: No se encontró la carpeta extraída de Nginx."
+        return
+    }
+
+    # Mover contenido a la ubicación final
+    Move-Item -Path $nginxExtractedFolder.FullName -Destination $installBasePath -Force
+    Write-Output "Nginx se ha movido a: $installBasePath"
+
+    # Limpiar la carpeta temporal
+    Remove-Item -Path "C:\temp_nginx" -Recurse -Force -ErrorAction SilentlyContinue
+
+    # Llamar a la función de configuración e inicio
+    Configurar-Arrancar-Nginx -nginxPath $installBasePath
+}
+
+###############################################################################
+# Función para configurar e iniciar Nginx y mostrar el contenido
+###############################################################################
+function Configurar-Arrancar-Nginx {
+    param ([string]$nginxPath = "C:\Nginx")
+
+    $configPath = Join-Path $nginxPath "conf\nginx.conf"
+    if (Test-Path $configPath) {
+        $nginxPort = Validar-Puerto -mensaje "Ingrese el puerto en el que desea ejecutar Nginx (por ejemplo, 8081):"
+        (Get-Content $configPath) -replace 'listen\s+80;', "listen $nginxPort;" | Set-Content $configPath
+        Write-Output "Configurado Nginx para escuchar en el puerto $nginxPort"
+
+        # Agregar regla de firewall
+        Write-Output "Agregando regla de firewall para permitir conexiones en el puerto $nginxPort..."
+        New-NetFirewallRule -DisplayName "Permitir Nginx en el puerto $nginxPort" -Direction Inbound -Action Allow -Protocol TCP -LocalPort $nginxPort -ErrorAction SilentlyContinue
+
+        # Aplicar cambios en los logs
+        (Get-Content $configPath) -replace "#error_log  logs/error.log;", "error_log  logs/error.log;" | Set-Content $configPath
+        (Get-Content $configPath) -replace "#access_log  logs/access.log  main;", "access_log  logs/access.log;" | Set-Content $configPath
+        Write-Output "Configuración de logs aplicada."
+    } else {
+        Write-Output "Advertencia: No se encontró nginx.conf en $nginxPath\conf"
+        return
+    }
+
+    # Verificar si nginx.exe existe
+    $nginxExe = Join-Path $nginxPath "nginx.exe"
+    if (-Not (Test-Path $nginxExe)) {
+        Write-Output "Error: No se encontró nginx.exe en $nginxPath"
+        return
+    }
+
+    # Iniciar Nginx
+    Write-Output "Iniciando Nginx desde: $nginxExe"
+    Start-Process -FilePath $nginxExe -WorkingDirectory $nginxPath -NoNewWindow
+    Set-NetFirewallRule -DisplayName "Permitir Nginx*" -Enabled True
+    Write-Output "Nginx se está ejecutando correctamente."
+
+    # Obtener y mostrar el contenido de la página en texto plano
+    Write-Output "Obteniendo el contenido de la página en http://localhost:$nginxPort ..."
+    try {
+        $response = Invoke-WebRequest -Uri "http://localhost:$nginxPort" -UseBasicParsing
+        Write-Output "Contenido de la página:"
+        Write-Output $response.Content
+    } catch {
+        Write-Output "No se pudo obtener el contenido de la página: $_"
+    }
+}
+
+###############################################################################
+# Función para instalar Apache y mostrar el contenido en consola
+###############################################################################
+function Instalar-Apache {
+    $versiones = Obtener-Versiones-Apache
+    $apacheInstallPath = "C:\Apache24"
+    
+    # Verificar si ya existe una instalación previa de Apache
+    if (Test-Path $apacheInstallPath) {
+        $resp = Read-Host "Ya existe una instalación de Apache en $apacheInstallPath. ¿Desea eliminarla para instalar otra versión? (S/N)"
+        if ($resp -match '^[sS]') {
+            try {
+                # Detener el servicio si está registrado
+                $serviceName = "Apache24"
+                if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+                    Write-Output "Deteniendo el servicio $serviceName..."
+                    Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+                }
+                
+                # Detener cualquier proceso httpd.exe que pudiera seguir corriendo
+                $httpdProcesses = Get-Process httpd -ErrorAction SilentlyContinue
+                if ($httpdProcesses) {
+                    Write-Output "Matando procesos httpd..."
+                    $httpdProcesses | Stop-Process -Force
+                }
+                
+                # Eliminar carpeta Apache24
+                Remove-Item -Path $apacheInstallPath -Recurse -Force
+                Write-Output "Instalación anterior de Apache eliminada."
+            } catch {
+                Write-Output "No se pudo eliminar la instalación previa: $_"
+                return
+            }
+        } else {
+            Write-Output "Cancelando instalación de Apache."
+            return
+        }
+    }
+    
+    Write-Output "Seleccione la versión de Apache a instalar:"
+    for ($i = 0; $i -lt $versiones.Length; $i++) {
+        Write-Output "$($i+1). $($versiones[$i])"
+    }
+    $seleccion = Read-Host "Ingrese el número de la versión"
+    if ($seleccion -lt 1 -or $seleccion -gt $versiones.Length) {
+        Write-Output "Opción inválida. Cancelando instalación."
+        return
+    }
+
+    $apacheVersion = $versiones[$seleccion - 1]
+    $urlApache = "https://www.apachelounge.com/download/VS17/binaries/$apacheVersion"
+    $zipPath = "C:\temp_download.zip"
+
+    # Descargar Apache
+    if (-not (Descargar-Archivo -url $urlApache -outputPath $zipPath)) {
+        Write-Output "Falló la descarga. Cancelando instalación."
+        return
+    }
+    
+    # Extraer el ZIP a un directorio temporal y mover los archivos a la ruta correcta
+    if (Test-Path $zipPath) {
+        Write-Output "Extrayendo archivos a $apacheInstallPath ..."
+        $tempExtractPath = "C:\ApacheTemp"
+        try {
+            Expand-Archive -Path $zipPath -DestinationPath $tempExtractPath -Force
+            # Si se extrajo una carpeta 'Apache24', mover sus contenidos
+            if (Test-Path "$tempExtractPath\Apache24") {
+                Move-Item -Path "$tempExtractPath\Apache24\*" -Destination $apacheInstallPath -Force
+            } else {
+                Move-Item -Path "$tempExtractPath\*" -Destination $apacheInstallPath -Force
+            }
+            Remove-Item -Path $tempExtractPath -Recurse -Force
+            Write-Output "Extracción completada y archivos movidos correctamente."
+        } catch {
+            Write-Output "Error al extraer el archivo: $_"
+            return
+        }
+    } else {
+        Write-Output "Error: El archivo ZIP no existe tras la descarga."
+        return
+    }
+    
+    Write-Output "Apache instalado en $apacheInstallPath"
+    Configurar-Arrancar-Apache -apachePath $apacheInstallPath
+}
+
+###############################################################################
+# Función para configurar e iniciar Apache y mostrar el contenido en consola
+###############################################################################
+function Configurar-Arrancar-Apache {
+    param (
+        [string]$apachePath = "C:\Apache24"
+    )
+    
+    # Instalar VC++ Redistributable si es necesario
+    if (-not (Instalar-VC_Redist)) {
+        Write-Output "No se pudo instalar VC++ Redistributable. Abortando la instalación de Apache."
+        return
+    }
+    
+    # Modificar el archivo httpd.conf para que Apache escuche en un puerto distinto a 80
+    $configPath = Join-Path $apachePath "conf\httpd.conf"
+    if (Test-Path $configPath) {
+        $apachePort = Validar-Puerto -mensaje "Ingrese el puerto en el que desea ejecutar Apache (por ejemplo, 8080):"
+        (Get-Content $configPath) -replace '^Listen\s+\d+', "Listen $apachePort" | Set-Content $configPath
+        Write-Output "Configurado Apache para escuchar en el puerto $apachePort"
+    } else {
+        Write-Output "No se encontró el archivo httpd.conf en $configPath. Asegúrese de que Apache esté instalado correctamente."
+    }
+    
+    # Registrar Apache como servicio y arrancarlo
+    $httpdArchivo = Get-ChildItem -Path $apachePath -Recurse -Filter httpd.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+
+    if ($httpdArchivo) {
+        $httpdExe = $httpdArchivo.FullName
+        $apacheServiceName = "Apache24"
+        Write-Output "Registrando Apache como un servicio..."
+        Start-Process -FilePath $httpdExe -ArgumentList '-k', 'install', '-n', $apacheServiceName -NoNewWindow -Wait
+
+        Write-Output "Iniciando servicio de Apache..."
+        Start-Service -Name $apacheServiceName
+
+        # Esperar unos segundos para que el servicio se inicie
+        Start-Sleep -Seconds 5
+
+        # Verificar el estado del servicio
+        $estado = Get-Service -Name $apacheServiceName
+        if ($estado.Status -eq "Running") {
+            Write-Output "Apache se está ejecutando correctamente."
+            # Intentar obtener el contenido de la página tras iniciar el servicio
+            Write-Output "Obteniendo el contenido de la página en http://localhost:$apachePort ..."
+            try {
+                $response = Invoke-WebRequest -Uri "http://localhost:$apachePort" -UseBasicParsing
+                Write-Output "Contenido de la página:"
+                Write-Output $response.Content
+            } catch {
+                Write-Output "No se pudo obtener el contenido de la página: $_"
+            }
+        } else {
+            Write-Output "Error: Apache no pudo iniciarse."
+        }
+    } else {
+        Write-Output "Error: No se encontró httpd.exe en $apachePath"
+    }
+}
+
+###############################################################################
+# Función para configurar reglas de firewall en el rango 1-65500
+###############################################################################
+function Configurar-Firewall {
+    Write-Output "Configurando reglas de firewall para permitir puertos del 1 al 65500..."
+    
+    New-NetFirewallRule -DisplayName "Permitir todos los puertos TCP (1-65500)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 1-65500 -ErrorAction SilentlyContinue
+    New-NetFirewallRule -DisplayName "Permitir todos los puertos UDP (1-65500)" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 1-65500 -ErrorAction SilentlyContinue
+    
+    Write-Output "Reglas de firewall configuradas exitosamente para los puertos del 1 al 65500."
+}
+
+###############################################################################
+# Menú de selección con bucle do-while
+###############################################################################
+do {
+    Write-Output "`nSeleccione el servicio a instalar:"
+    Write-Output "1. IIS"
+    Write-Output "2. Nginx"
+    Write-Output "3. Apache"
+    Write-Output "4. Salir"
+    $opcion = Read-Host "Ingrese el número de la opción"
+    
+    switch ($opcion) {
+        "1" {
+            Instalar-IIS
+            Configurar-IIS
+            Configurar-Firewall
+        }
+        "2" {
+            Instalar-Nginx
+            Configurar-Firewall
+        }
+        "3" {
+            Instalar-Apache
+            Configurar-Firewall
+        }
+        "4" {
+            Write-Output "Saliendo del instalador."
+        }
+        default {
+            Write-Output "Opción inválida. Intente de nuevo."
+        }
+    }
+} while ($opcion -ne "4")
+
+# Al final, por conveniencia, aplicar de nuevo Configurar-Firewall
+Configurar-Firewall
