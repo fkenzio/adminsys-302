@@ -104,6 +104,24 @@ add_user() {
     systemctl restart vsftpd
     echo "Servidor FTP configurado correctamente."
 
+    # Configuración para usuario anónimo
+    anonymous_enable=YES
+    anon_root=/srv/ftp/General
+    anon_upload_enable=NO
+    anon_mkdir_write_enable=NO
+    anon_other_write_enable=NO
+    EOF
+    )
+
+    # Evita duplicar configuraciones si ya existen
+    if ! grep -q "anonymous_enable=YES" /etc/vsftpd.conf; then
+        echo "$ANON_CONF" >> /etc/vsftpd.conf
+    fi
+
+    chmod 755 /srv/ftp/General  # Permitir lectura para todos
+    chown ftp:ftp /srv/ftp/General  # Establecer como propiedad del usuario ftp
+
+
     # Crear el usuario y carpetas
     useradd -m -s /bin/bash -p "$(openssl passwd -1 "$PASSWORD")" -G "$GROUP" "$USERNAME"
     HOME_DIR="/home/$USERNAME"
