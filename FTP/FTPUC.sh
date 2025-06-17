@@ -1,5 +1,32 @@
 #!/bin/bash
 
+# Configuración del servidor FTP
+apt update && apt install -y vsftpd
+systemctl enable vsftpd
+
+# Crear directorios principales
+mkdir -p /srv/ftp/General /srv/ftp/Reprobados /srv/ftp/Recursadores
+chmod 755 /srv/ftp/General
+chmod 770 /srv/ftp/Reprobados
+chmod 770 /srv/ftp/Recursadores
+
+groupadd Reprobados
+groupadd Recursadores
+
+chown root:Reprobados /srv/ftp/Reprobados
+chown root:Recursadores /srv/ftp/Recursadores
+
+# Configurar vsftpd para permitir solo acceso a las carpetas especificadas
+echo "local_enable=YES" >> /etc/vsftpd.conf
+echo "write_enable=YES" >> /etc/vsftpd.conf
+echo "chroot_local_user=YES" >> /etc/vsftpd.conf
+echo "allow_writeable_chroot=YES" >> /etc/vsftpd.conf
+echo "user_sub_token=$USER" >> /etc/vsftpd.conf
+echo "local_root=/home/$USERNAME" >> /etc/vsftpd.conf
+
+systemctl restart vsftpd
+echo "Servidor FTP configurado correctamente."
+
 # Función para validar el nombre de usuario
 validate_username() {
     while true; do
@@ -77,32 +104,6 @@ add_user() {
     validate_password
     select_group
 
-    # Configuración del servidor FTP
-    apt update && apt install -y vsftpd
-    systemctl enable vsftpd
-
-    # Crear directorios principales
-    mkdir -p /srv/ftp/General /srv/ftp/Reprobados /srv/ftp/Recursadores
-    chmod 755 /srv/ftp/General
-    chmod 770 /srv/ftp/Reprobados
-    chmod 770 /srv/ftp/Recursadores
-
-    groupadd Reprobados
-    groupadd Recursadores
-
-    chown root:Reprobados /srv/ftp/Reprobados
-    chown root:Recursadores /srv/ftp/Recursadores
-
-    # Configurar vsftpd para permitir solo acceso a las carpetas especificadas
-    echo "local_enable=YES" >> /etc/vsftpd.conf
-    echo "write_enable=YES" >> /etc/vsftpd.conf
-    echo "chroot_local_user=YES" >> /etc/vsftpd.conf
-    echo "allow_writeable_chroot=YES" >> /etc/vsftpd.conf
-    echo "user_sub_token=$USER" >> /etc/vsftpd.conf
-    echo "local_root=/home/$USERNAME" >> /etc/vsftpd.conf
-
-    systemctl restart vsftpd
-    echo "Servidor FTP configurado correctamente."
 
     # Configurar usuario anónimo (solo lectura en /srv/ftp/General)
    if ! grep -q "anonymous_enable=YES" /etc/vsftpd.conf; then
@@ -116,7 +117,7 @@ add_user() {
         echo "anon_other_write_enable=NO"
     } >> /etc/vsftpd.conf
     fi
-    
+
     # Evita duplicar configuraciones si ya existen
     if ! grep -q "anonymous_enable=YES" /etc/vsftpd.conf; then
         echo "$ANON_CONF" >> /etc/vsftpd.conf
