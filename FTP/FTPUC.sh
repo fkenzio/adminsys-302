@@ -104,6 +104,9 @@ add_user() {
     systemctl restart vsftpd
     echo "Servidor FTP configurado correctamente."
 
+    # Configurar usuario anónimo (solo lectura en /srv/ftp/General)
+    ANON_CONF=$(cat <<EOF
+
     # Configuración para usuario anónimo
     anonymous_enable=YES
     anon_root=/srv/ftp/General
