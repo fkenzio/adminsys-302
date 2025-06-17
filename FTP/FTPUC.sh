@@ -105,17 +105,18 @@ add_user() {
     echo "Servidor FTP configurado correctamente."
 
     # Configurar usuario anónimo (solo lectura en /srv/ftp/General)
-    ANON_CONF=$(cat <<EOF
-
-    # Configuración para usuario anónimo
-    anonymous_enable=YES
-    anon_root=/srv/ftp/General
-    anon_upload_enable=NO
-    anon_mkdir_write_enable=NO
-    anon_other_write_enable=NO
-    EOF
-    )
-
+   if ! grep -q "anonymous_enable=YES" /etc/vsftpd.conf; then
+    {
+        echo ""
+        echo "# Configuración para usuario anónimo"
+        echo "anonymous_enable=YES"
+        echo "anon_root=/srv/ftp/General"
+        echo "anon_upload_enable=NO"
+        echo "anon_mkdir_write_enable=NO"
+        echo "anon_other_write_enable=NO"
+    } >> /etc/vsftpd.conf
+    fi
+    
     # Evita duplicar configuraciones si ya existen
     if ! grep -q "anonymous_enable=YES" /etc/vsftpd.conf; then
         echo "$ANON_CONF" >> /etc/vsftpd.conf
