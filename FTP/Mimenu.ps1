@@ -30,17 +30,17 @@ While ($Ciclo){
 
 echo "¿Que desea hacer?"
 
-echo "1-crear grupo"
+echo "1-Crear grupo"
 
-echo "2-crear usuario"
+echo "2-Crear usuario"
 
-echo "3- asignar usuario-grupo"
+echo "3-Asignar usuario-grupo"
 
-echo "4- cambiar de grupo"
+echo "4-Cambiar de grupo"
 
-echo "5-salir"
+echo "5-Salir"
 
-$Opc = Read-Host "ELija una opcion"
+$Opc = Read-Host "Elige una opcion"
 
 switch($Opc){
 
