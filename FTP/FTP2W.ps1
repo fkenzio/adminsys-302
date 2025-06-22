@@ -1,4 +1,7 @@
 function instalarFTP {
+    Import-Module WebAdministration -ErrorAction SilentlyContinue
+    Import-Module ServerManager -ErrorAction SilentlyContinue
+
     # Instalar IIS y servicio FTP
     Install-WindowsFeature Web-Server -IncludeAllSubFeature -Restart
     Install-WindowsFeature Web-FTP-Service -IncludeAllSubFeature
