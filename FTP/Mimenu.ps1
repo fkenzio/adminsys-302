@@ -1,4 +1,10 @@
-﻿. C:\Users\Administrador\Desktop\FTP\Ftp_Functions.ps1
+﻿$FTPSiteName= "SitioFTP"
+$FTPRootDIR= "C:\FTP"
+$FTPPort=21
+$FTPRootDirLogin= "C:\FTP\LocalUser"
+
+
+. C:\Users\Administrador\Desktop\FTP\Ftp_Functions.ps1
 
 instalarFTP
 
@@ -24,15 +30,15 @@ While ($Ciclo){
 
 echo "¿Que desea hacer?"
 
-echo "1-Crear grupo"
+echo "1- Crear grupo"
 
-echo "2-Crear usuario"
+echo "2- Crear usuario"
 
-echo "3-Asignar usuario-grupo"
+echo "3- Asignar usuario-grupo"
 
-echo "4-Cambiar de grupo"
+echo "4- Cambiar de grupo"
 
-echo "5-Salir"
+echo "5- Salir"
 
 $Opc = Read-Host "Elige una opcion"
 
@@ -99,7 +105,7 @@ while ($InvalidUserName){
 echo "Nombre de usuario invalido, asegurate que no contenga espacios, contenga al menos un caracter, ni supere de 15 caracteres"
 
 
-$UserNombre = Read-Host "Ingrese el nombre de su usuario, por ejemplo: danielvaldez"
+$UserNombre = Read-Host "Ingrese el nombre de su usuario: "
 
 if ($UserNombre -like "* *" -or $UserNombre -notmatch "[a-zA-Z0-9]" -or $UserNombre.Length -gt 15 -or $UserNombre -eq "" -or $UserNombre -notmatch $regexespecials){
 
@@ -300,7 +306,7 @@ $Ciclo=$false
 default{
 
 clear
-echo "elija una opcion valida"
+echo "elige una opcion valida"
 
 }
 
