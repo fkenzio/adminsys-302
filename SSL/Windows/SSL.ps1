@@ -1,5 +1,5 @@
 # Importar funciones desde el módulo externo
-Import-Module "$PSScriptRoot/Funciones_SSL.ps1"
+Import-Module "C:\Users\Administrator\Desktop\Funciones_SSL.ps1"
 
 function Menu-Web {
     while ($true) {
