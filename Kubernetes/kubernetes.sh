@@ -1,229 +1,709 @@
 #!/bin/bash
 
-# Script para configurar Docker, Apache y PostgreSQL
-# Creado: Mayo, 2025
+# Solo falta el servicio creo
+function instalarMinikube(){
+    sudo apt update -y
+    sudo snap install kubectl --classic
+    wget https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64 -O minikube
+    chmod 755 minikube 
+    sudo mv minikube /usr/local/bin/
+    minikube version
+    minikube start --memory=2048 --cpus=2
+    minikube status
+}
 
-echo "==== Iniciando configuración de Docker, Apache y PostgreSQL ===="
+function crearPods(){
+  eval $(minikube docker-env)
 
-# Comprobar si se está ejecutando como root
-if [ "$EUID" -ne 0 ]; then
-  echo "Este script requiere privilegios de superusuario."
-  echo "Por favor ejecuta: sudo bash $0"
-  exit 1
-fi
-
-# Variables de configuración
-USUARIO_ACTUAL=$(logname || echo $SUDO_USER || echo $USER)
-APACHE_PUERTO=8080
-APACHE_PERSONALIZADO_PUERTO=8081
-POSTGRES1_PUERTO=5432
-POSTGRES2_PUERTO=5433
-
-# Variables específicas para cada instancia de PostgreSQL
-POSTGRES1_USER="postgres1_user"
-POSTGRES1_PASSWORD="postgres1_secreto"
-POSTGRES1_DB="postgres1_db"
-
-POSTGRES2_USER="postgres2_user"
-POSTGRES2_PASSWORD="postgres2_secreto"
-POSTGRES2_DB="postgres2_db"
-
-echo "==== 1. Instalando Docker en Ubuntu ===="
-# Actualizar repositorios
-apt-get update
-
-# Instalar dependencias necesarias
-apt-get install -y apt-transport-https ca-certificates curl software-properties-common
-
-# Añadir la clave GPG oficial de Docker
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
-
-# Añadir el repositorio de Docker
-add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
-
-# Actualizar la base de datos de paquetes
-apt-get update
-
-# Instalar Docker CE (Community Edition)
-apt-get install -y docker-ce docker-ce-cli containerd.io
-
-# Verificar que Docker está instalado correctamente
-echo "Verificando la instalación de Docker..."
-docker run --rm hello-world
-
-# Agregar usuario al grupo docker para ejecutar comandos sin sudo
-usermod -aG docker $USUARIO_ACTUAL
-echo "Usuario $USUARIO_ACTUAL añadido al grupo docker."
-
-echo "==== 2. Buscando e instalando una imagen de Apache ===="
-# Buscar imágenes de Apache disponibles
-docker search httpd
-
-# Descargar la imagen oficial de Apache
-docker pull httpd:latest
-
-# Verificar que la imagen se descargó correctamente
-docker images | grep httpd
-
-# Limpiar contenedores existentes con el mismo nombre si existen
-docker rm -f mi-apache 2>/dev/null || true
-docker rm -f mi-apache-mod 2>/dev/null || true
-docker rm -f apache-custom 2>/dev/null || true
-
-# Ejecutar un contenedor con la imagen de Apache
-docker run -d --name mi-apache -p $APACHE_PUERTO:80 httpd:latest
-echo "Apache desplegado en http://localhost:$APACHE_PUERTO"
-
-echo "==== 3. Modificando la imagen para cambiar el contenido de la página inicial ===="
-# Crear un directorio local para nuestro contenido personalizado
-mkdir -p /home/$USUARIO_ACTUAL/contenido-apache
-echo "<html><body><h1>It works!</h1><p></p></body></html>" > /home/$USUARIO_ACTUAL/contenido-apache/index.html
-
-# Detener y eliminar el contenedor anterior
-docker stop mi-apache
-docker rm mi-apache
-
-# Ejecutar un nuevo contenedor montando nuestro contenido personalizado
-docker run -d --name mi-apache-mod -p $APACHE_PUERTO:80 -v /home/$USUARIO_ACTUAL/contenido-apache:/usr/local/apache2/htdocs/ httpd:latest
-echo "Apache con contenido modificado desplegado en http://localhost:$APACHE_PUERTO"
-
-echo "==== 4. Creando una imagen personalizada con el archivo index modificado ===="
-# Crear un directorio para nuestro Dockerfile
-mkdir -p /home/$USUARIO_ACTUAL/apache-personalizado
-cd /home/$USUARIO_ACTUAL/apache-personalizado
-
-# Crear el archivo index.html personalizado
-echo "<html><body><h1>El apache ruben.</h1><p></p></body></html>" > index.html
-
-# Crear el Dockerfile
-cat > Dockerfile << 'EOF'
-FROM httpd:latest
-COPY index.html /usr/local/apache2/htdocs/
-EXPOSE 80
+  tee secret.yaml > /dev/null << EOF
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: flaskapi-secrets
+type: Opaque
+data:
+  db_root_password: YWRtaW4=
 EOF
 
-# Construir la imagen personalizada
-docker build -t mi-apache-personalizado:v1 .
+  kubectl apply -f secret.yaml
 
-# Ejecutar un contenedor con nuestra imagen personalizada
-docker run -d --name apache-custom -p $APACHE_PERSONALIZADO_PUERTO:80 mi-apache-personalizado:v1
-echo "Apache personalizado desplegado en http://localhost:$APACHE_PERSONALIZADO_PUERTO"
+  tee configmapmysql.yaml > /dev/null << EOF
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: mysql-config
+data:
+  confluence.cnf: |-
+    [mysqld]
+    character-set-server=utf8
+    collation-server=utf8_bin
+    default-storage-engine=INNODB
+    max_allowed_packet=256M
+    transaction-isolation=READ-COMMITTED
+EOF
 
-echo "==== 5. Configurando comunicación entre contenedores con PostgreSQL ===="
-# Limpiar contenedores existentes con el mismo nombre si existen
-docker rm -f postgres1 2>/dev/null || true
-docker rm -f postgres2 2>/dev/null || true
+  kubectl apply -f configmapmysql.yaml
 
-# Eliminar la red si ya existe
-docker network rm mi-red-postgres 2>/dev/null || true
+  tee crearpods.yaml > /dev/null << EOF
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  labels:
+    app: db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+      - name: mysql
+        image: mysql
+        imagePullPolicy: Never
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: flaskapi-secrets
+              key: db_root_password
+        ports:
+        - containerPort: 3306
+          name: db-container
+        volumeMounts:
+          - name: mysql-persistent-storage
+            mountPath: /var/lib/mysql
+          - name: mysql-config-volume
+            mountPath: /etc/mysql/conf.d
+      volumes:
+        - name: mysql-persistent-storage
+          persistentVolumeClaim:
+            claimName: mysql-pv-claim
+        - name: mysql-config-volume
+          configMap:
+            name: mysql-config
 
-# Crear una red Docker
-docker network create mi-red-postgres
-echo "Red Docker 'mi-red-postgres' creada."
 
-# Ejecutar el primer contenedor PostgreSQL con usuario específico
-docker run -d --name postgres1 \
-    --network mi-red-postgres \
-    -e POSTGRES_PASSWORD=$POSTGRES1_PASSWORD \
-    -e POSTGRES_USER=$POSTGRES1_USER \
-    -e POSTGRES_DB=$POSTGRES1_DB \
-    -p $POSTGRES1_PUERTO:5432 \
-    postgres:latest
-echo "Primer contenedor PostgreSQL (postgres1) desplegado en el puerto $POSTGRES1_PUERTO."
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  labels:
+    app: db
+spec:
+  ports:
+  - port: 3306
+    protocol: TCP
+    name: mysql
+  selector:
+    app: db
+  type: ClusterIP
+EOF
 
-# Ejecutar el segundo contenedor PostgreSQL con usuario específico
-docker run -d --name postgres2 \
-    --network mi-red-postgres \
-    -e POSTGRES_PASSWORD=$POSTGRES2_PASSWORD \
-    -e POSTGRES_USER=$POSTGRES2_USER \
-    -e POSTGRES_DB=$POSTGRES2_DB \
-    -p $POSTGRES2_PUERTO:5432 \
-    postgres:latest
-echo "Segundo contenedor PostgreSQL (postgres2) desplegado en el puerto $POSTGRES2_PUERTO."
+  kubectl apply -f crearpods.yaml
 
-# Esperar a que los contenedores PostgreSQL estén listos
-echo "Esperando a que los contenedores PostgreSQL estén completamente iniciados..."
-sleep 15
+  echo "Esperando a que el pod mysql esté listo..."
+  kubectl wait --for=condition=ready pod -l app=db --timeout=120s
 
-# Crear tabla de prueba en postgres1
-echo "Creando tabla de prueba en postgres1..."
-docker exec -it postgres1 bash -c "PGPASSWORD=$POSTGRES1_PASSWORD psql -U $POSTGRES1_USER -d $POSTGRES1_DB -c 'CREATE TABLE prueba (id serial PRIMARY KEY, nombre VARCHAR(50));'"
-docker exec -it postgres1 bash -c "PGPASSWORD=$POSTGRES1_PASSWORD psql -U $POSTGRES1_USER -d $POSTGRES1_DB -c \"INSERT INTO prueba (nombre) VALUES ('Hola amiguitos');\""
+  kubectl run -i --rm --tty mysql-client --image=mysql --restart=Never -- \
+  mysql --host=mysql --user=root --password=admin << EOF
+CREATE DATABASE IF NOT EXISTS flaskapi;
+USE flaskapi;
+CREATE TABLE IF NOT EXISTS usuarios (
+    idUsuario INT PRIMARY KEY AUTO_INCREMENT,
+    firstName VARCHAR(255),
+    Correo VARCHAR(255),
+    Contrasena VARCHAR(255)
+);
+EOF
+}
 
-# Verificar que la tabla se creó correctamente
-echo "Verificando que la tabla se creó correctamente en postgres1:"
-docker exec -it postgres1 bash -c "PGPASSWORD=$POSTGRES1_PASSWORD psql -U $POSTGRES1_USER -d $POSTGRES1_DB -c 'SELECT * FROM prueba;'"
 
-# Crear usuario en postgres1 para acceso remoto desde postgres2
-echo "Creando usuario en postgres1 para acceso remoto desde postgres2..."
-docker exec -it postgres1 bash -c "PGPASSWORD=$POSTGRES1_PASSWORD psql -U $POSTGRES1_USER -d $POSTGRES1_DB -c \"CREATE USER remote_user WITH PASSWORD 'remote_pass';\""
-docker exec -it postgres1 bash -c "PGPASSWORD=$POSTGRES1_PASSWORD psql -U $POSTGRES1_USER -d $POSTGRES1_DB -c \"GRANT ALL PRIVILEGES ON DATABASE $POSTGRES1_DB TO remote_user;\""
-docker exec -it postgres1 bash -c "PGPASSWORD=$POSTGRES1_PASSWORD psql -U $POSTGRES1_USER -d $POSTGRES1_DB -c \"GRANT ALL PRIVILEGES ON TABLE prueba TO remote_user;\""
+function mostrarLogs(){
+    echo "Ingresa el nombre del pod: "
+    read pod
+    if ! kubectl logs "$pod" &>/dev/null; then
+        echo "El pod ingresado no existe"
+    else
+        kubectl logs "$pod"
+    fi
+}
 
-# Modificar configuración de PostgreSQL para permitir conexiones remotas
-echo "Configurando postgres1 para permitir conexiones remotas..."
-docker exec -it postgres1 bash -c "echo \"host all all 0.0.0.0/0 md5\" >> /var/lib/postgresql/data/pg_hba.conf"
-docker exec -it postgres1 bash -c "echo \"listen_addresses = '*'\" >> /var/lib/postgresql/data/postgresql.conf"
-docker exec -it postgres1 bash -c "pg_ctl -D /var/lib/postgresql/data reload"
+function desplegarApp(){
+    eval $(minikube docker-env)
 
-# Instalar cliente PostgreSQL en postgres2 para conectarse a postgres1
-echo "Configurando postgres2 para conectarse a postgres1..."
-docker exec -it postgres2 bash -c "apt-get update && apt-get install -y postgresql-client"
+    # Código fuente de la API
+    tee flaskapi.py > /dev/null <<EOF
+import os
+import socket
+from flask import jsonify, request, Flask
+from flaskext.mysql import MySQL
 
-# Conectar desde postgres2 al postgres1 usando el nombre del contenedor como host
-echo "Verificando conexión desde postgres2 a postgres1 usando nombre del contenedor como host:"
-docker exec -it postgres2 bash -c "PGPASSWORD=remote_pass psql -h postgres1 -U remote_user -d $POSTGRES1_DB -c 'SELECT * FROM prueba;'"
+app = Flask(__name__)
 
-# Insertar datos desde postgres2 a postgres1
-echo "Insertando datos desde postgres2 a la tabla en postgres1:"
-docker exec -it postgres2 bash -c "PGPASSWORD=remote_pass psql -h postgres1 -U remote_user -d $POSTGRES1_DB -c \"INSERT INTO prueba (nombre) VALUES ('Dgoat');\""
+mysql = MySQL()
 
-# Crear tabla en postgres2
-echo "Creando tabla en postgres2..."
-docker exec -it postgres2 bash -c "PGPASSWORD=$POSTGRES2_PASSWORD psql -U $POSTGRES2_USER -d $POSTGRES2_DB -c 'CREATE TABLE prueba_1 (id serial PRIMARY KEY, nombre VARCHAR(50));'"
-docker exec -it postgres2 bash -c "PGPASSWORD=$POSTGRES2_PASSWORD psql -U $POSTGRES2_USER -d $POSTGRES2_DB -c \"INSERT INTO prueba_1 (nombre) VALUES ('Dbooker');\""
+app.config["MYSQL_DATABASE_USER"] = "root"
+app.config["MYSQL_DATABASE_PASSWORD"] = os.getenv("db_root_password")
+app.config["MYSQL_DATABASE_DB"] = os.getenv("db_name")
+app.config["MYSQL_DATABASE_HOST"] = os.getenv("MYSQL_SERVICE_HOST")
+app.config["MYSQL_DATABASE_PORT"] = int(os.getenv("MYSQL_SERVICE_PORT"))
+mysql.init_app(app)
 
-# Crear usuario en postgres2 para acceso remoto desde postgres1
-echo "Creando usuario en postgres2 para acceso remoto desde postgres1..."
-docker exec -it postgres2 bash -c "PGPASSWORD=$POSTGRES2_PASSWORD psql -U $POSTGRES2_USER -d $POSTGRES2_DB -c \"CREATE USER remote_user2 WITH PASSWORD 'remote_pass2';\""
-docker exec -it postgres2 bash -c "PGPASSWORD=$POSTGRES2_PASSWORD psql -U $POSTGRES2_USER -d $POSTGRES2_DB -c \"GRANT ALL PRIVILEGES ON DATABASE $POSTGRES2_DB TO remote_user2;\""
-docker exec -it postgres2 bash -c "PGPASSWORD=$POSTGRES2_PASSWORD psql -U $POSTGRES2_USER -d $POSTGRES2_DB -c \"GRANT ALL PRIVILEGES ON TABLE prueba_1 TO remote_user2;\""
+@app.route("/")
+def index():
+    return "¡Hola desde la versión inicial de la API!"
 
-# Modificar configuración de PostgreSQL en postgres2 para permitir conexiones remotas
-echo "Configurando postgres2 para permitir conexiones remotas..."
-docker exec -it postgres2 bash -c "echo \"host all all 0.0.0.0/0 md5\" >> /var/lib/postgresql/data/pg_hba.conf"
-docker exec -it postgres2 bash -c "echo \"listen_addresses = '*'\" >> /var/lib/postgresql/data/postgresql.conf"
-docker exec -it postgres2 bash -c "pg_ctl -D /var/lib/postgresql/data reload"
+@app.route("/create", methods=["POST"])
+def add_user():
+    json = request.json
+    firstName = json.get("firstName")
+    Correo = json.get("Correo")
+    Contrasena = json.get("Contrasena")
+    if firstName and Correo and Contrasena and request.method == "POST":
+        sql = "INSERT INTO usuarios (firstName, Correo, Contrasena) VALUES (%s, %s, %s)"
+        data = (firstName, Correo, Contrasena)
+        try:
+            conn = mysql.connect()
+            cursor = conn.cursor()
+            cursor.execute(sql, data)
+            conn.commit()
+            cursor.close()
+            conn.close()
+            pod_name = socket.gethostname()
+            resp = jsonify({"status": "Éxito", "message": "Usuario registrado correctamente", "pod_info": pod_name})
+            resp.status_code = 201 # Changed to 201 for resource creation
+            return resp
+        except Exception as e:
+            return jsonify({"status": "Error", "message": str(e)})
+    else:
+        return jsonify({"status": "Fallo", "message": "Se requieren firstName, Correo y Contrasena"})
 
-# Instalar cliente PostgreSQL en postgres1 (por si no está instalado)
-echo "Verificando que postgres1 tiene cliente PostgreSQL..."
-docker exec -it postgres1 bash -c "apt-get update && apt-get install -y postgresql-client"
+@app.route("/users", methods=["GET"])
+def users():
+    try:
+        conn = mysql.connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM usuarios")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        pod_name = socket.gethostname()
+        resp = jsonify({"status": "Éxito", "message": "Lista de usuarios obtenida", "pod_info": pod_name, "usuarios_data": rows})
+        resp.status_code = 200
+        return resp
+    except Exception as e:
+        return jsonify({"status": "Error", "message": str(e)})
 
-# Conectar desde postgres1 al postgres2 usando el nombre del contenedor como host
-echo "Verificando conexión desde postgres1 a postgres2 usando nombre del contenedor como host:"
-docker exec -it postgres1 bash -c "PGPASSWORD=remote_pass2 psql -h postgres2 -U remote_user2 -d $POSTGRES2_DB -c 'SELECT * FROM prueba_1;'"
+@app.route("/user/<int:idUsuario>", methods=["GET"])
+def user(idUsuario):
+    try:
+        conn = mysql.connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM usuarios WHERE idUsuario=%s", (idUsuario,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        pod_name = socket.gethostname()
+        resp = jsonify({"status": "Éxito", "message": "Detalles del usuario recuperados", "pod_info": pod_name, "user_detail": row})
+        resp.status_code = 200
+        return resp
+    except Exception as e:
+        return jsonify({"status": "Error", "message": str(e)})
 
-# Insertar datos desde postgres1 a postgres2
-echo "Insertando datos desde postgres1 a la tabla en postgres2:"
-docker exec -it postgres1 bash -c "PGPASSWORD=remote_pass2 psql -h postgres2 -U remote_user2 -d $POSTGRES2_DB -c \"INSERT INTO prueba_1 (nombre) VALUES ('Durant');\""
+@app.route("/update", methods=["POST"])
+def update_user():
+    json = request.json
+    firstName = json.get("firstName")
+    Correo = json.get("Correo")
+    Contrasena = json.get("Contrasena")
+    idUsuario = json.get("idUsuario")
+    if firstName and Correo and Contrasena and idUsuario and request.method == "POST":
+        sql = "UPDATE usuarios SET firstName=%s, Correo=%s, Contrasena=%s WHERE idUsuario=%s"
+        data = (firstName, Correo, Contrasena, idUsuario)
+        try:
+            conn = mysql.connect()
+            cursor = conn.cursor()
+            cursor.execute(sql, data)
+            conn.commit()
+            cursor.close()
+            conn.close()
+            pod_name = socket.gethostname()
+            resp = jsonify({"status": "Éxito", "message": "Información de usuario actualizada", "pod_info": pod_name})
+            resp.status_code = 200
+            return resp
+        except Exception as e:
+            return jsonify({"status": "Error", "message": str(e)})
+    else:
+        return jsonify({"status": "Fallo", "message": "Se requieren idUsuario, firstName, Correo y Contrasena para actualizar"})
 
-# Verificar los datos insertados en ambas bases de datos
-echo "Verificando todos los datos en la tabla de postgres1:"
-docker exec -it postgres1 bash -c "PGPASSWORD=$POSTGRES1_PASSWORD psql -U $POSTGRES1_USER -d $POSTGRES1_DB -c 'SELECT * FROM prueba;'"
+@app.route("/delete/<int:idUsuario>")
+def delete_user(idUsuario):
+    try:
+        conn = mysql.connect()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM usuarios WHERE idUsuario=%s", (idUsuario,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        pod_name = socket.gethostname()
+        resp = jsonify({"status": "Éxito", "message": "Usuario eliminado del sistema", "pod_info": pod_name})
+        resp.status_code = 200
+        return resp
+    except Exception as e:
+        return jsonify({"status": "Error", "message": str(e)})
 
-echo "Verificando todos los datos en la tabla de postgres2:"
-docker exec -it postgres2 bash -c "PGPASSWORD=$POSTGRES2_PASSWORD psql -U $POSTGRES2_USER -d $POSTGRES2_DB -c 'SELECT * FROM prueba_1;'"
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+EOF
 
-echo ""
-echo "====== CONFIGURACIÓN COMPLETADA ======"
-echo "Apache estándar: http://localhost:$APACHE_PUERTO"
-echo "Apache personalizado: http://localhost:$APACHE_PERSONALIZADO_PUERTO"
-echo "PostgreSQL 1: localhost:$POSTGRES1_PUERTO (usuario: $POSTGRES1_USER, contraseña: $POSTGRES1_PASSWORD, BD: $POSTGRES1_DB)"
-echo "PostgreSQL 2: localhost:$POSTGRES2_PUERTO (usuario: $POSTGRES2_USER, contraseña: $POSTGRES2_PASSWORD, BD: $POSTGRES2_DB)"
-echo ""
-echo "Credenciales para conexión cruzada:"
-echo "- De postgres2 a postgres1: host: postgres1, usuario: remote_user, contraseña: remote_pass, BD: $POSTGRES1_DB"
-echo "- De postgres1 a postgres2: host: postgres2, usuario: remote_user2, contraseña: remote_pass2, BD: $POSTGRES2_DB"
-echo ""
-echo "Nota: Para utilizar Docker sin privilegios de superusuario, cierra sesión y vuelve a iniciar sesión"
-echo "o ejecuta 'newgrp docker' en tu terminal actual."
+    # Dependencias
+    tee requirements.txt > /dev/null <<EOF
+Flask==1.0.3  
+Flask-MySQL==1.4.0  
+PyMySQL==0.9.3
+uWSGI==2.0.17.1
+mysql-connector-python
+cryptography
+EOF
+
+    # Dockerfile
+    tee Dockerfile > /dev/null <<EOF
+FROM python:3.6-slim
+
+RUN apt-get clean \
+    && apt-get -y update
+
+RUN apt-get -y install \
+    nginx \
+    python3-dev \
+    build-essential
+
+WORKDIR /app
+
+COPY requirements.txt /app/requirements.txt
+RUN pip install -r requirements.txt --src /usr/local/src
+
+COPY . .
+
+EXPOSE 5000
+CMD [ "python", "flaskapi.py"]
+EOF
+
+    docker build . -t flask-api
+
+    # ConfigMap
+    tee ConfigMap.yaml > /dev/null <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  APP_SETTING: "Mensaje desde el ConfigMap"  
+EOF
+
+    # Deployment
+    tee Deployment.yaml > /dev/null <<EOF
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flaskapi-deployment
+  labels:
+    app: flaskapi
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: flaskapi
+  template:
+    metadata:
+      labels:
+        app: flaskapi
+    spec:
+      containers:
+        - name: flaskapi
+          image: flask-api
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 5000
+          env:
+            - name: db_root_password
+              valueFrom:
+                secretKeyRef:
+                  name: flaskapi-secrets
+                  key: db_root_password
+            - name: db_name
+              value: flaskapi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-service
+spec:
+  ports:
+  - port: 5000
+    protocol: TCP
+    targetPort: 5000
+  selector:
+    app: flaskapi
+  type: LoadBalancer
+EOF
+
+    # Aplicación de recursos
+    kubectl apply -f ConfigMap.yaml
+    kubectl apply -f Deployment.yaml
+
+    echo "App desplegada satisfactoriamente"
+
+    eval $(minikube docker-env -u)
+
+    minikube service flask-service
+}
+
+
+function ejecutarRollingUpdate(){
+  eval $(minikube docker-env)
+
+  # Código fuente de la API adaptado a la tabla usuarios
+  tee flaskapi.py > /dev/null <<EOF
+import os
+import socket
+from flask import jsonify, request, Flask
+from flaskext.mysql import MySQL
+
+app = Flask(__name__)
+
+mysql = MySQL()
+
+# MySQL configurations
+app.config["MYSQL_DATABASE_USER"] = "root"
+app.config["MYSQL_DATABASE_PASSWORD"] = os.getenv("db_root_password")
+app.config["MYSQL_DATABASE_DB"] = os.getenv("db_name")
+app.config["MYSQL_DATABASE_HOST"] = os.getenv("MYSQL_SERVICE_HOST")
+app.config["MYSQL_DATABASE_PORT"] = int(os.getenv("MYSQL_SERVICE_PORT"))
+mysql.init_app(app)
+
+
+@app.route("/")
+def index():
+    """Function to test the functionality of the API"""
+    return "¡Bienvenidos a la versión dos de la API de gestión de usuarios!"
+
+
+@app.route("/create", methods=["POST"])
+def add_usuario():
+    """Function to create a usuario in the MySQL database"""
+    json = request.json
+    firstName = json.get("firstName")
+    Correo = json.get("Correo")
+    Contrasena = json.get("Contrasena")
+    if firstName and Correo and Contrasena and request.method == "POST":
+        sql = "INSERT INTO usuarios(firstName, Correo, Contrasena) VALUES(%s, %s, %s)"
+        data = (firstName, Correo, Contrasena)
+        try:
+            conn = mysql.connect()
+            cursor = conn.cursor()
+            cursor.execute(sql, data)
+            conn.commit()
+            cursor.close()
+            conn.close()
+            pod_name = socket.gethostname()
+            resp = jsonify({"status": "Creación exitosa", "message": "Nuevo usuario añadido", "pod_origin": pod_name})
+            resp.status_code = 201
+            return resp
+        except Exception as exception:
+            return jsonify({"status": "Error en creación", "message": str(exception)})
+    else:
+        return jsonify({"status": "Datos incompletos", "message": "Por favor, proporcione firstName, Correo y Contrasena"})
+
+
+@app.route("/usuarios", methods=["GET"])
+def usuarios():
+    """Function to retrieve all usuarios from the MySQL database"""
+    try:
+        conn = mysql.connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM usuarios")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        pod_name = socket.gethostname()
+        resp = jsonify({"status": "Consulta exitosa", "message": "Todos los usuarios listados", "pod_origin": pod_name, "lista_usuarios": rows})
+        resp.status_code = 200
+        return resp
+    except Exception as exception:
+        return jsonify({"status": "Error al consultar", "message": str(exception)})
+
+
+@app.route("/usuario/<int:idUsuario>", methods=["GET"])
+def usuario(idUsuario):
+    """Function to get information of a specific usuario in the MySQL database"""
+    try:
+        conn = mysql.connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM usuarios WHERE idUsuario=%s", (idUsuario,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        pod_name = socket.gethostname()
+        resp = jsonify({"status": "Usuario encontrado", "message": "Información detallada del usuario", "pod_origin": pod_name, "usuario_detalles": row})
+        resp.status_code = 200
+        return resp
+    except Exception as exception:
+        return jsonify({"status": "Error al buscar usuario", "message": str(exception)})
+
+
+@app.route("/update", methods=["POST"])
+def update_usuario():
+    """Function to update a usuario in the MySQL database"""
+    json = request.json
+    firstName = json.get("firstName")
+    Correo = json.get("Correo")
+    Contrasena = json.get("Contrasena")
+    idUsuario = json.get("idUsuario")
+    if firstName and Correo and Contrasena and idUsuario and request.method == "POST":
+        sql = "UPDATE usuarios SET firstName=%s, Correo=%s, Contrasena=%s WHERE idUsuario=%s"
+        data = (firstName, Correo, Contrasena, idUsuario)
+        try:
+            conn = mysql.connect()
+            cursor = conn.cursor()
+            cursor.execute(sql, data)
+            conn.commit()
+            pod_name = socket.gethostname()
+            resp = jsonify({"status": "Actualización completa", "message": "Datos de usuario modificados", "pod_origin": pod_name})
+            resp.status_code = 200
+            cursor.close()
+            conn.close()
+            return resp
+        except Exception as exception:
+            return jsonify({"status": "Error al actualizar", "message": str(exception)})
+    else:
+        return jsonify({"status": "Faltan datos", "message": "Se requieren idUsuario, firstName, Correo y Contrasena para la actualización"})
+
+
+@app.route("/delete/<int:idUsuario>")
+def delete_usuario(idUsuario):
+    """Function to delete a usuario from the MySQL database"""
+    try:
+        conn = mysql.connect()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM usuarios WHERE idUsuario=%s", (idUsuario,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        pod_name = socket.gethostname()
+        resp = jsonify({"status": "Eliminación exitosa", "message": "Usuario borrado del sistema", "pod_origin": pod_name})
+        resp.status_code = 200
+        return resp
+    except Exception as exception:
+        return jsonify({"status": "Error al eliminar", "message": str(exception)})
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+EOF
+
+  # Dependencias
+  tee requirements.txt > /dev/null <<EOF
+Flask==1.0.3  
+Flask-MySQL==1.4.0  
+PyMySQL==0.9.3
+uWSGI==2.0.17.1
+mysql-connector-python
+cryptography
+EOF
+
+  # Dockerfile
+  tee Dockerfile > /dev/null <<EOF
+FROM python:3.6-slim
+
+RUN apt-get clean \
+    && apt-get -y update
+
+RUN apt-get -y install \
+    nginx \
+    python3-dev \
+    build-essential
+
+WORKDIR /app
+
+COPY requirements.txt /app/requirements.txt
+RUN pip install -r requirements.txt --src /usr/local/src
+
+COPY . .
+
+EXPOSE 5000
+CMD [ "python", "flaskapi.py"]
+EOF
+
+  docker build . -t flask-api:v2
+
+  # ConfigMap
+  tee ConfigMap.yaml > /dev/null <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  APP_SETTING: "Mensaje desde el ConfigMap"  
+EOF
+
+  # Deployment
+  tee Deployment.yaml > /dev/null <<EOF
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flaskapi-deployment
+  labels:
+    app: flaskapi
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: flaskapi
+  template:
+    metadata:
+      labels:
+        app: flaskapi
+    spec:
+      containers:
+        - name: flaskapi
+          image: flask-api:v2
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 5000
+          env:
+            - name: db_root_password
+              valueFrom:
+                secretKeyRef:
+                  name: flaskapi-secrets
+                  key: db_root_password
+            - name: db_name
+              value: flaskapi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-service
+spec:
+  ports:
+  - port: 5000
+    protocol: TCP
+    targetPort: 5000
+  selector:
+    app: flaskapi
+  type: LoadBalancer
+EOF
+
+  # Aplicación de recursos
+  kubectl apply -f ConfigMap.yaml
+  kubectl apply -f Deployment.yaml
+
+  kubectl rollout status deployment flaskapi-deployment
+
+  for i in {1..5}; do
+    curl $(minikube service flask-service --url)
+  done
+
+  echo "Rolling update realizada satisfactoriamente"
+
+  eval $(minikube docker-env -u)
+
+  minikube service flask-service
+}
+
+
+function configurarVolumenesPersistentes(){
+  # Crear PV y PVC
+  tee pvmysql.yaml > /dev/null << EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mysql-pv-volume
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 2Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Delete
+  hostPath:
+    path: "/mnt/data"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pv-claim
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+EOF
+
+  sudo mkdir -p /mnt/data/
+  sudo chmod 777 /mnt/data/
+
+  # Aplicar PV y PVC
+  kubectl apply -f pvmysql.yaml
+}
+
+
+while :
+do
+    echo "===============Menu de opciones============================="
+echo "Menú Principal de Opciones"
+    echo "1. Establecer Minikube"
+    echo "2. Generar Contenedores"
+    echo "3. Consultar Registros de Contenedor"
+    echo "4. Implementar Aplicacion"
+    echo "5. Iniciar Actualizacion Continua"
+    echo "6. Ajustar Almacenamiento Persistente"
+    echo "7. Finalizar"
+    echo "Elige tu opcion"
+    echo "============================================================="
+    read opc
+
+    case $opc in
+        "1")
+            instalarMinikube
+        ;;
+        "2")
+            crearPods
+        ;;
+        "3")
+            mostrarLogs
+        ;;
+        "4")
+            desplegarApp
+        ;;
+        "5")
+            ejecutarRollingUpdate
+        ;;
+        "6")
+            configurarVolumenesPersistentes
+        ;;
+        "7")
+          echo "Saliendo..."
+          break
+        ;;
+        *)
+            echo "Selecciona una opcion valida"
+        ;;
+    esac
+done
